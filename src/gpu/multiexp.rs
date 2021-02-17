@@ -3,7 +3,6 @@ use super::locks;
 use super::sources;
 use super::utils;
 use crate::bls::Engine;
-use crate::multicore::Worker;
 use crate::multiexp::{multiexp as cpu_multiexp, FullDensity};
 
 use ff::{PrimeField, ScalarEngine};
@@ -266,7 +265,6 @@ where
 
     pub fn multiexp<G>(
         &mut self,
-        pool: &Worker,
         bases: Arc<Vec<G>>,
         exps: Arc<Vec<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>>,
         skip: usize,
