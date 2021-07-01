@@ -9,6 +9,9 @@ mod locks;
 pub use self::locks::*;
 
 #[cfg(feature = "gpu")]
+mod program;
+
+#[cfg(feature = "gpu")]
 mod sources;
 
 #[cfg(feature = "gpu")]

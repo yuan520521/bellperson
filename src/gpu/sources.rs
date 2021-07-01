@@ -1,5 +1,6 @@
-use crate::bls::Engine;
-use ff_cl_gen as ffgen;
+use log::trace;
+
+use blstrs::Engine;
 
 // Instead of having a very large OpenCL program written for a specific curve, with a lot of
 // rudandant codes (As OpenCL doesn't have generic types or templates), this module will dynamically
@@ -20,16 +21,10 @@ fn fft(field: &str) -> String {
     String::from(FFT_SRC).replace("FIELD", field)
 }
 
-#[cfg(not(feature = "blstrs"))]
-const BLSTRS_DEF: &str = "";
-#[cfg(feature = "blstrs")]
-const BLSTRS_DEF: &str = "#define BLSTRS";
-
 fn ec(field: &str, point: &str) -> String {
     String::from(EC_SRC)
         .replace("FIELD", field)
         .replace("POINT", point)
-        .replace("__BLSTRS__", BLSTRS_DEF)
 }
 
 fn multiexp(point: &str, exp: &str) -> String {
@@ -39,27 +34,23 @@ fn multiexp(point: &str, exp: &str) -> String {
 }
 
 // WARNING: This function works only with Short Weierstrass Jacobian curves with Fq2 extension field.
-pub fn kernel<E>(limb64: bool) -> String
+pub fn kernel<E>() -> String
 where
     E: Engine,
 {
-    vec![
-        if limb64 {
-            ffgen::field::<E::Fr, ffgen::Limb64>("Fr")
-        } else {
-            ffgen::field::<E::Fr, ffgen::Limb32>("Fr")
-        },
+    let source = vec![
+        ff_cl_gen::shared(),
+        ff_cl_gen::field::<E::Fr>("Fr"),
         fft("Fr"),
-        if limb64 {
-            ffgen::field::<E::Fq, ffgen::Limb64>("Fq")
-        } else {
-            ffgen::field::<E::Fq, ffgen::Limb32>("Fq")
-        },
+        ff_cl_gen::field::<E::Fq>("Fq"),
         ec("Fq", "G1"),
         multiexp("G1", "Fr"),
         field2("Fq2", "Fq"),
         ec("Fq2", "G2"),
         multiexp("G2", "Fr"),
     ]
-    .join("\n\n")
+    .join("\n\n");
+
+    trace!("Kernel source:\n{}", source);
+    source
 }
