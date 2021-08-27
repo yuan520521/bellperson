@@ -9,9 +9,7 @@ use ff::{PrimeField, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
 use log::{error, info};
 use rayon::prelude::*;
-#[cfg(feature = "cuda")]
-use rust_gpu_tools::cuda;
-use rust_gpu_tools::{opencl, program_closures, Device, Program};
+use rust_gpu_tools::{program_closures, Device, Program};
 use std::any::TypeId;
 use std::sync::Arc;
 
@@ -147,7 +145,7 @@ where
         // doesn't, hence ignore the warning for the OpenCL code path.
         //let closures = define_closures!(|program: &opencl::Program | &cuda::Program|
         let closures = program_closures!(
-            |program| -> GPUResult<Vec<<G as CurveAffine>::Projective>> {
+            |program, _arg| -> GPUResult<Vec<<G as CurveAffine>::Projective>> {
                 let base_buffer = program.create_buffer_from_slice(bases)?;
                 let exp_buffer = program.create_buffer_from_slice(exps)?;
 
@@ -197,7 +195,7 @@ where
             }
         );
 
-        let results = self.program.run(closures)?;
+        let results = self.program.run(closures, ())?;
 
         // Using the algorithm below, we can calculate the final result by accumulating the results
         // of those `NUM_GROUPS` * `NUM_WINDOWS` threads.

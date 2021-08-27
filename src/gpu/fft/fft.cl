@@ -14,12 +14,20 @@ KERNEL void radix_fft(GLOBAL FIELD* x, // Source buffer
                       GLOBAL FIELD* y, // Destination buffer
                       GLOBAL FIELD* pq, // Precalculated twiddle factors
                       GLOBAL FIELD* omegas, // [omega, omega^2, omega^4, ...]
-                      LOCAL FIELD* u, // Local buffer to store intermediary values
+                      LOCAL FIELD* u_arg, // Local buffer to store intermediary values
                       uint n, // Number of elements
                       uint lgp, // Log2 of `p` (Read more in the link above)
                       uint deg, // 1=>radix2, 2=>radix4, 3=>radix8, ...
                       uint max_deg) // Maximum degree supported, according to `pq` and `omegas`
 {
+// CUDA doesn't support local buffers ("shared memory" in CUDA lingo) as function arguments,
+// ignore that argument and declare the external memory here instead.
+#ifdef CUDA
+  extern LOCAL FIELD u[];
+#else
+   LOCAL FIELD* u = u_arg;
+#endif
+
   uint lid = GET_LOCAL_ID();
   uint lsize = GET_LOCAL_SIZE();
   uint index = GET_GROUP_ID();

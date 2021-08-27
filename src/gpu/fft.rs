@@ -5,7 +5,7 @@ use crate::gpu::{
 };
 use ff::Field;
 use log::info;
-use rust_gpu_tools::{opencl, Device, Framework, Program};
+use rust_gpu_tools::{program_closures, Device, LocalBuffer, Program};
 use std::cmp;
 
 const LOG2_MAX_ELEMENTS: usize = 32; // At most 2^32 elements is supported.
@@ -17,7 +17,7 @@ pub struct FFTKernel<E>
 where
     E: Engine,
 {
-    program: opencl::Program,
+    program: Program,
     _lock: locks::GPULock, // RFC 1857: struct fields are dropped in the same order as they are declared.
     priority: bool,
     _phantom: std::marker::PhantomData<E>,
@@ -32,17 +32,10 @@ where
 
         // Select the first device for FFT
         let device = *Device::all()
-            .iter()
-            .find(|device| device.opencl_device().is_some())
+            .first()
             .ok_or(GPUError::Simple("No working GPUs found!"))?;
 
-        // Curently the FFT kernel is only implemented for OpenCL and not for CUDA
-        let program = match program::program_use_framework::<E>(&device, &Framework::Opencl) {
-            Ok(Program::Opencl(program)) => program,
-            #[cfg(feature = "cuda")]
-            Ok(_) => unreachable!(),
-            Err(error) => return Err(error),
-        };
+        let program = program::program::<E>(&device)?;
 
         info!("FFT: 1 working device(s) selected.");
         info!("FFT: Device 0: {}", device.name());
@@ -55,120 +48,82 @@ where
         })
     }
 
-    /// Peforms a FFT round
-    /// * `log_n` - Specifies log2 of number of elements
-    /// * `log_p` - Specifies log2 of `p`, (http://www.bealto.com/gpu-fft_group-1.html)
-    /// * `deg` - 1=>radix2, 2=>radix4, 3=>radix8, ...
-    /// * `max_deg` - The precalculated values pq` and `omegas` are valid for radix degrees up to `max_deg`
-    #[allow(clippy::too_many_arguments)]
-    fn radix_fft_round(
-        &self,
-        src_buffer: &opencl::Buffer<E::Fr>,
-        dst_buffer: &opencl::Buffer<E::Fr>,
-        pq_buffer: &opencl::Buffer<E::Fr>,
-        omegas_buffer: &opencl::Buffer<E::Fr>,
-        log_n: u32,
-        log_p: u32,
-        deg: u32,
-        max_deg: u32,
-    ) -> GPUResult<()> {
-        if locks::PriorityLock::should_break(self.priority) {
-            return Err(GPUError::GPUTaken);
-        }
-
-        let n = 1u32 << log_n;
-        let local_work_size = 1 << cmp::min(deg - 1, MAX_LOG2_LOCAL_WORK_SIZE);
-        let global_work_size = n >> deg;
-        let kernel = self.program.create_kernel(
-            "radix_fft",
-            global_work_size as usize,
-            local_work_size as usize,
-        )?;
-        kernel
-            .arg(src_buffer)
-            .arg(dst_buffer)
-            .arg(pq_buffer)
-            .arg(omegas_buffer)
-            .arg(&opencl::LocalBuffer::<E::Fr>::new(1 << deg))
-            .arg(&n)
-            .arg(&log_p)
-            .arg(&deg)
-            .arg(&max_deg)
-            .run()?;
-        Ok(())
-    }
-
-    /// Share some precalculated values between threads to boost the performance
-    fn setup_pq_omegas(
-        &self,
-        omega: &E::Fr,
-        n: usize,
-        max_deg: u32,
-        pq_buffer: &mut opencl::Buffer<E::Fr>,
-        omegas_buffer: &mut opencl::Buffer<E::Fr>,
-    ) -> GPUResult<()> {
-        // Precalculate:
-        // [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
-        let mut pq = vec![E::Fr::zero(); 1 << max_deg >> 1];
-        let twiddle = omega.pow([(n >> max_deg) as u64]);
-        pq[0] = E::Fr::one();
-        if max_deg > 1 {
-            pq[1] = twiddle;
-            for i in 2..(1 << max_deg >> 1) {
-                pq[i] = pq[i - 1];
-                pq[i].mul_assign(&twiddle);
-            }
-        }
-        self.program.write_from_buffer(pq_buffer, 0, &pq)?;
-
-        // Precalculate [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
-        let mut omegas = vec![E::Fr::zero(); 32];
-        omegas[0] = *omega;
-        for i in 1..LOG2_MAX_ELEMENTS {
-            omegas[i] = omegas[i - 1].pow([2u64]);
-        }
-        self.program.write_from_buffer(omegas_buffer, 0, &omegas)?;
-
-        Ok(())
-    }
-
     /// Performs FFT on `a`
     /// * `omega` - Special value `omega` is used for FFT over finite-fields
     /// * `log_n` - Specifies log2 of number of elements
-    pub fn radix_fft(&mut self, a: &mut [E::Fr], omega: &E::Fr, log_n: u32) -> GPUResult<()> {
-        let n = 1 << log_n;
-        // All usages are safe as the buffers are initialized from either the host or the GPU
-        // before they are read.
-        let mut src_buffer = unsafe { self.program.create_buffer::<E::Fr>(n)? };
-        let mut dst_buffer = unsafe { self.program.create_buffer::<E::Fr>(n)? };
-        let mut pq_buffer = unsafe {
-            self.program
-                .create_buffer::<E::Fr>(1 << MAX_LOG2_RADIX >> 1)?
-        };
-        let mut omegas_buffer = unsafe { self.program.create_buffer::<E::Fr>(LOG2_MAX_ELEMENTS)? };
-        let max_deg = cmp::min(MAX_LOG2_RADIX, log_n);
-        self.setup_pq_omegas(omega, n, max_deg, &mut pq_buffer, &mut omegas_buffer)?;
+    pub fn radix_fft(&mut self, input: &mut [E::Fr], omega: &E::Fr, log_n: u32) -> GPUResult<()> {
+        let closures = program_closures!(|program, input: &mut [E::Fr]| -> GPUResult<()> {
+            let n = 1 << log_n;
+            // All usages are safe as the buffers are initialized from either the host or the GPU
+            // before they are read.
+            let mut src_buffer = unsafe { program.create_buffer::<E::Fr>(n)? };
+            let mut dst_buffer = unsafe { program.create_buffer::<E::Fr>(n)? };
+            // The precalculated values pq` and `omegas` are valid for radix degrees up to `max_deg`
+            let max_deg = cmp::min(MAX_LOG2_RADIX, log_n);
 
-        self.program.write_from_buffer(&mut src_buffer, 0, &*a)?;
-        let mut log_p = 0u32;
-        while log_p < log_n {
-            let deg = cmp::min(max_deg, log_n - log_p);
-            self.radix_fft_round(
-                &src_buffer,
-                &dst_buffer,
-                &pq_buffer,
-                &omegas_buffer,
-                log_n,
-                log_p,
-                deg,
-                max_deg,
-            )?;
-            log_p += deg;
-            std::mem::swap(&mut src_buffer, &mut dst_buffer);
-        }
+            // Precalculate:
+            // [omega^(0/(2^(deg-1))), omega^(1/(2^(deg-1))), ..., omega^((2^(deg-1)-1)/(2^(deg-1)))]
+            let mut pq = vec![E::Fr::zero(); 1 << max_deg >> 1];
+            let twiddle = omega.pow([(n >> max_deg) as u64]);
+            pq[0] = E::Fr::one();
+            if max_deg > 1 {
+                pq[1] = twiddle;
+                for i in 2..(1 << max_deg >> 1) {
+                    pq[i] = pq[i - 1];
+                    pq[i].mul_assign(&twiddle);
+                }
+            }
+            let pq_buffer = program.create_buffer_from_slice(&pq)?;
 
-        self.program.read_into_buffer(&src_buffer, 0, a)?;
+            // Precalculate [omega, omega^2, omega^4, omega^8, ..., omega^(2^31)]
+            let mut omegas = vec![E::Fr::zero(); 32];
+            omegas[0] = *omega;
+            for i in 1..LOG2_MAX_ELEMENTS {
+                omegas[i] = omegas[i - 1].pow([2u64]);
+            }
+            let omegas_buffer = program.create_buffer_from_slice(&omegas)?;
 
-        Ok(())
+            program.write_from_buffer(&mut src_buffer, 0, &*input)?;
+            // Specifies log2 of `p`, (http://www.bealto.com/gpu-fft_group-1.html)
+            let mut log_p = 0u32;
+            // Each iteration performs a FFT round
+            while log_p < log_n {
+                // 1=>radix2, 2=>radix4, 3=>radix8, ...
+                let deg = cmp::min(max_deg, log_n - log_p);
+
+                if locks::PriorityLock::should_break(self.priority) {
+                    return Err(GPUError::GPUTaken);
+                }
+
+                let n = 1u32 << log_n;
+                let local_work_size = 1 << cmp::min(deg - 1, MAX_LOG2_LOCAL_WORK_SIZE);
+                let global_work_size = n >> deg;
+                let kernel = program.create_kernel(
+                    "radix_fft",
+                    global_work_size as usize,
+                    local_work_size as usize,
+                )?;
+                kernel
+                    .arg(&src_buffer)
+                    .arg(&dst_buffer)
+                    .arg(&pq_buffer)
+                    .arg(&omegas_buffer)
+                    .arg(&LocalBuffer::<E::Fr>::new(1 << deg))
+                    .arg(&n)
+                    .arg(&log_p)
+                    .arg(&deg)
+                    .arg(&max_deg)
+                    .run()?;
+
+                log_p += deg;
+                std::mem::swap(&mut src_buffer, &mut dst_buffer);
+            }
+
+            program.read_into_buffer(&src_buffer, 0, input)?;
+
+            Ok(())
+        });
+
+        self.program.run(closures, input)
     }
 }
