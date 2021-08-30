@@ -104,7 +104,7 @@ where
     E: Engine,
 {
     pub fn create(d: opencl::Device, priority: bool) -> GPUResult<SingleMultiexpKernel<E>> {
-        let src = sources::kernel::<E>(d.vendor() == opencl::Vendor::Nvidia);
+        let src = sources::kernel::<E>(d.brand() == opencl::Brand::Nvidia);
 
         let exp_bits = exp_size::<E>() * 8;
         let core_count = utils::get_core_count(&d);
@@ -159,9 +159,10 @@ where
             .program
             .create_buffer::<<G as CurveAffine>::Projective>(2 * self.core_count)?;
 
-        // The global work size follows CUDA's definition and is the number of `LOCAL_WORK_SIZE`
-        // sized thread groups.
-        let global_work_size = (num_windows * num_groups + LOCAL_WORK_SIZE - 1) / LOCAL_WORK_SIZE;
+        // Make global work size divisible by `LOCAL_WORK_SIZE`
+        let mut global_work_size = num_windows * num_groups;
+        global_work_size +=
+            (LOCAL_WORK_SIZE - (global_work_size % LOCAL_WORK_SIZE)) % LOCAL_WORK_SIZE;
 
         let kernel = self.program.create_kernel(
             if TypeId::of::<G>() == TypeId::of::<E::G1Affine>() {
@@ -186,7 +187,7 @@ where
             .arg(&(window_size as u32))
             .run()?;
 
-        let mut results = vec![<G as CurveAffine>::Projective::zero(); 2 * self.core_count];
+        let mut results = vec![<G as CurveAffine>::Projective::zero(); num_groups * num_windows];
         self.program
             .read_into_buffer(&result_buffer, 0, &mut results)?;
 
