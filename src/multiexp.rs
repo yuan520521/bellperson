@@ -10,6 +10,7 @@ use rayon::prelude::*;
 
 use super::SynthesisError;
 use crate::gpu;
+use crate::multicore::Worker;
 use crate::multicore::RAYON_THREAD_POOL;
 
 /// An object that builds a source of bases.
@@ -287,6 +288,7 @@ where
 /// Perform multi-exponentiation. The caller is responsible for ensuring the
 /// query size is the same as the number of exponents.
 pub fn multiexp<Q, D, G, S>(
+    pool: &Worker,
     bases: S,
     density_map: D,
     exponents: Arc<Vec<<<G::Engine as ScalarEngine>::Fr as PrimeField>::Repr>>,
@@ -311,7 +313,7 @@ where
             }
 
             let (bss, skip) = bases.clone().get();
-            k.multiexp(bss, Arc::new(exps), skip, n)
+            k.multiexp(pool, bss, Arc::new(exps), skip, n)
         }) {
             return Ok(p);
         }

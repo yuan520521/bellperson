@@ -7,6 +7,7 @@
 
 use std::env;
 
+use crossbeam_channel::bounded;
 use lazy_static::lazy_static;
 use yastl::Pool;
 

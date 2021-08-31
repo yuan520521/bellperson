@@ -18,16 +18,24 @@ pub enum GPUError {
     KernelUninitialized,
     #[error("GPU accelerator is disabled!")]
     GPUDisabled,
+    #[error("SynthesisError: {0}")]
+    Synthesis(#[from] Box<crate::SynthesisError>),
 }
 
 pub type GPUResult<T> = std::result::Result<T, GPUError>;
 
 #[cfg(feature = "gpu")]
-impl From<std::boxed::Box<dyn std::any::Any + std::marker::Send>> for GPUError {
-    fn from(e: std::boxed::Box<dyn std::any::Any + std::marker::Send>) -> Self {
+impl From<Box<dyn std::any::Any + std::marker::Send>> for GPUError {
+    fn from(e: Box<dyn std::any::Any + std::marker::Send>) -> Self {
         match e.downcast::<Self>() {
             Ok(err) => *err,
             Err(_) => GPUError::Simple("An unknown GPU error happened!"),
         }
+    }
+}
+
+impl From<crate::SynthesisError> for GPUError {
+    fn from(e: crate::SynthesisError) -> Self {
+        GPUError::Synthesis(Box::new(e))
     }
 }

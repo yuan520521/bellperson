@@ -11,9 +11,8 @@ use super::{ParameterSource, Proof};
 use crate::bls::Engine;
 use crate::domain::{EvaluationDomain, Scalar};
 use crate::gpu::{LockedFFTKernel, LockedMultiexpKernel};
-use crate::multicore::{Worker, RAYON_THREAD_POOL};
+use crate::multicore::{Worker, RAYON_THREAD_POOL, THREAD_POOL};
 use crate::multiexp::{multiexp, DensityTracker, FullDensity};
-use crate::par;
 use crate::{
     Circuit, ConstraintSystem, Index, LinearCombination, SynthesisError, Variable, BELLMAN_VERSION,
 };
@@ -372,154 +371,191 @@ where
     let params = &params;
     let worker = &worker;
 
-    par! {
-        let a_s = {
-            provers_ref
-                .iter_mut()
-                .map(|prover| {
-                    let mut a = EvaluationDomain::from_coeffs(std::mem::replace(
-                        &mut prover.a,
-                        Vec::new(),
-                    ))?;
-                    let mut b = EvaluationDomain::from_coeffs(std::mem::replace(
-                        &mut prover.b,
-                        Vec::new(),
-                    ))?;
-                    let mut c = EvaluationDomain::from_coeffs(std::mem::replace(
-                        &mut prover.c,
-                        Vec::new(),
-                    ))?;
+    let mut a_s = None;
+    let mut params_h = None;
+    let mut params_l = None;
+    THREAD_POOL.scoped(|s| {
+        let a_s = &mut a_s;
+        s.execute(move || {
+            *a_s = Some(
+                provers_ref
+                    .iter_mut()
+                    .map(|prover| {
+                        let mut a = EvaluationDomain::from_coeffs(std::mem::replace(
+                            &mut prover.a,
+                            Vec::new(),
+                        ))?;
+                        let mut b = EvaluationDomain::from_coeffs(std::mem::replace(
+                            &mut prover.b,
+                            Vec::new(),
+                        ))?;
+                        let mut c = EvaluationDomain::from_coeffs(std::mem::replace(
+                            &mut prover.c,
+                            Vec::new(),
+                        ))?;
 
-                    info!("a: ifft");
-                    a.ifft(&worker, &mut fft_kern)?;
-                    a.coset_fft(&worker, &mut fft_kern)?;
+                        info!("a: ifft");
+                        a.ifft(&worker, &mut fft_kern)?;
+                        a.coset_fft(&worker, &mut fft_kern)?;
 
-                    info!("b: ifft");
-                    b.ifft(&worker, &mut fft_kern)?;
-                    b.coset_fft(&worker, &mut fft_kern)?;
+                        info!("b: ifft");
+                        b.ifft(&worker, &mut fft_kern)?;
+                        b.coset_fft(&worker, &mut fft_kern)?;
 
-                    info!("c: ifft");
-                    c.ifft(&worker, &mut fft_kern)?;
-                    c.coset_fft(&worker, &mut fft_kern)?;
+                        info!("c: ifft");
+                        c.ifft(&worker, &mut fft_kern)?;
+                        c.coset_fft(&worker, &mut fft_kern)?;
 
-                    info!("fft collect");
+                        info!("fft collect");
 
-                    a.mul_assign(&worker, &b);
-                    a.sub_assign(&worker, &c);
+                        a.mul_assign(&worker, &b);
+                        a.sub_assign(&worker, &c);
 
-                    drop(b);
-                    drop(c);
+                        drop(b);
+                        drop(c);
 
-                    info!("coset");
-                    a.divide_by_z_on_coset(&worker);
-                    a.icoset_fft(&worker, &mut fft_kern)?;
+                        info!("coset");
+                        a.divide_by_z_on_coset(&worker);
+                        a.icoset_fft(&worker, &mut fft_kern)?;
 
-                    let a = a.into_coeffs();
-                    let a_len = a.len() - 1;
+                        let a = a.into_coeffs();
+                        let a_len = a.len() - 1;
 
-                    Ok(Arc::new(
-                        a.into_iter()
-                         .take(a_len)
-                         .map(|s| s.0.into_repr())
-                         .collect::<Vec<_>>(),
-                    ))
-                })
-                .collect::<Result<Vec<_>, SynthesisError>>()
-        },
-        let params_h = {
-            params.get_h(n)
-        },
-        let params_l = {
-            params.get_l(provers_len)
-        }
-    };
+                        Ok(Arc::new(
+                            a.into_iter()
+                                .take(a_len)
+                                .map(|s| s.0.into_repr())
+                                .collect::<Vec<_>>(),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, SynthesisError>>(),
+            );
+        });
 
-    let a_s = a_s?;
-    let params_h = params_h?;
-    let params_l = params_l?;
+        let params_h = &mut params_h;
+        s.execute(move || {
+            *params_h = Some(params.get_h(n));
+        });
+
+        let params_l = &mut params_l;
+        s.execute(move || {
+            *params_l = Some(params.get_l(n));
+        });
+    });
+
+    let a_s = a_s.unwrap()?;
+    let params_h = params_h.unwrap()?;
+    let params_l = params_l.unwrap()?;
 
     info!("fft done");
     let mut multiexp_kern = Some(LockedMultiexpKernel::<E>::new(log_d, priority));
 
     let mkern = &mut multiexp_kern;
     let provers_ref = &provers;
-    par! {
-        let h_s = {
+
+    let mut h_s = None;
+    let mut input_assignments = None;
+    let mut aux_assignments = None;
+
+    THREAD_POOL.scoped(|s| {
+        let h_s = &mut h_s;
+        s.execute(move || {
             info!("h_s");
-            a_s.into_iter()
-                .map(|a| {
-                    let h = multiexp(
-                        params_h.clone(),
-                        FullDensity,
-                        a,
-                        mkern,
-                    );
-                    Ok(h)
-                })
-                .collect::<Result<Vec<_>, SynthesisError>>()
-        },
-        let input_assignments = {
+            *h_s = Some(
+                a_s.into_iter()
+                    .map(|a| multiexp(&worker, params_h.clone(), FullDensity, a, mkern))
+                    .collect::<Result<Vec<_>, SynthesisError>>(),
+            );
+        });
+
+        let input_assignments = &mut input_assignments;
+        s.execute(move || {
             info!("input_assignments");
-            provers_ref
-                .par_iter()
-                .map(|prover| {
-                    Arc::new(
-                        prover.input_assignment
-                            .iter()
-                            .map(|s| s.into_repr())
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        },
-        let aux_assignments = {
+            *input_assignments = Some(
+                provers_ref
+                    .par_iter()
+                    .map(|prover| {
+                        Arc::new(
+                            prover
+                                .input_assignment
+                                .iter()
+                                .map(|s| s.into_repr())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        });
+
+        let aux_assignments = &mut aux_assignments;
+        s.execute(move || {
             info!("aux_assignments");
-            provers_ref
-                .par_iter()
-                .map(|prover| {
-                    Arc::new(
-                        prover.aux_assignment
-                            .iter()
-                            .map(|s| s.into_repr())
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .collect::<Vec<_>>()
-        }
-    };
-    let h_s = h_s?;
+            *aux_assignments = Some(
+                provers_ref
+                    .par_iter()
+                    .map(|prover| {
+                        Arc::new(
+                            prover
+                                .aux_assignment
+                                .iter()
+                                .map(|s| s.into_repr())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        });
+    });
+
+    let h_s = h_s.unwrap()?;
+    let aux_assignments = aux_assignments.unwrap();
+    let input_assignments = input_assignments.unwrap();
 
     info!("l_s");
     let aux_assignments = &aux_assignments;
     let mkern = &mut multiexp_kern;
-    par! {
-        let l_s = aux_assignments
-            .iter()
-            .map(|aux_assignment| {
-                let l = multiexp(
-                    params_l.clone(),
-                    FullDensity,
-                    aux_assignment.clone(),
-                    mkern,
-                );
-                Ok(l)
-            })
-            .collect::<Result<Vec<_>, SynthesisError>>(),
-        let a_source = {
-            params.get_a(input_len, a_aux_density_total)
-        },
-        let b_g1_source = {
-            params.get_b_g1(b_input_density_total, b_aux_density_total)
-        },
-        let b_g2_source = {
-            params.get_b_g2(b_input_density_total, b_aux_density_total)
-        }
-    };
 
-    let l_s = l_s?;
-    let (a_inputs_source, a_aux_source) = a_source?;
-    let (b_g1_inputs_source, b_g1_aux_source) = b_g1_source?;
-    let (b_g2_inputs_source, b_g2_aux_source) = b_g2_source?;
+    let mut l_s = None;
+    let mut a_source = None;
+    let mut b_g1_source = None;
+    let mut b_g2_source = None;
+
+    THREAD_POOL.scoped(|s| {
+        let l_s = &mut l_s;
+        s.execute(move || {
+            *l_s = Some(
+                aux_assignments
+                    .iter()
+                    .map(|aux_assignment| {
+                        multiexp(
+                            &worker,
+                            params_l.clone(),
+                            FullDensity,
+                            aux_assignment.clone(),
+                            mkern,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, SynthesisError>>(),
+            );
+        });
+        let a_source = &mut a_source;
+        s.execute(move || *a_source = Some(params.get_a(input_len, a_aux_density_total)));
+
+        let b_g1_source = &mut b_g1_source;
+        s.execute(move || {
+            *b_g1_source = Some(params.get_b_g1(b_input_density_total, b_aux_density_total))
+        });
+
+        let b_g2_source = &mut b_g2_source;
+        s.execute(move || {
+            *b_g2_source = Some(params.get_b_g2(b_input_density_total, b_aux_density_total))
+        });
+    });
+
+    let l_s = l_s.unwrap()?;
+    let (a_inputs_source, a_aux_source) = a_source.unwrap()?;
+    let (b_g1_inputs_source, b_g1_aux_source) = b_g1_source.unwrap()?;
+    let (b_g2_inputs_source, b_g2_aux_source) = b_g2_source.unwrap()?;
 
     info!("inputs");
     let inputs = provers
@@ -528,6 +564,7 @@ where
         .zip(aux_assignments.iter())
         .map(|((prover, input_assignment), aux_assignment)| {
             let a_inputs = multiexp(
+                &worker,
                 a_inputs_source.clone(),
                 FullDensity,
                 input_assignment.clone(),
@@ -535,6 +572,7 @@ where
             );
 
             let a_aux = multiexp(
+                &worker,
                 a_aux_source.clone(),
                 Arc::new(prover.a_aux_density),
                 aux_assignment.clone(),
@@ -545,6 +583,7 @@ where
             let b_aux_density = Arc::new(prover.b_aux_density);
 
             let b_g1_inputs = multiexp(
+                &worker,
                 b_g1_inputs_source.clone(),
                 b_input_density.clone(),
                 input_assignment.clone(),
@@ -552,6 +591,7 @@ where
             );
 
             let b_g1_aux = multiexp(
+                &worker,
                 b_g1_aux_source.clone(),
                 b_aux_density.clone(),
                 aux_assignment.clone(),
@@ -559,12 +599,14 @@ where
             );
 
             let b_g2_inputs = multiexp(
+                &worker,
                 b_g2_inputs_source.clone(),
                 b_input_density,
                 input_assignment.clone(),
                 &mut multiexp_kern,
             );
             let b_g2_aux = multiexp(
+                &worker,
                 b_g2_aux_source.clone(),
                 b_aux_density,
                 aux_assignment.clone(),
@@ -645,8 +687,8 @@ where
                 g_b.add_assign(&b2_answer);
                 b1_answer.mul_assign(r);
                 g_c.add_assign(&b1_answer);
-                g_c.add_assign(&h?);
-                g_c.add_assign(&l?);
+                g_c.add_assign(&h);
+                g_c.add_assign(&l);
 
                 Ok(Proof {
                     a: g_a.into_affine(),
