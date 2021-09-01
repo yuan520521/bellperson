@@ -374,7 +374,8 @@ fn test_with_bls12() {
 
     let now = std::time::Instant::now();
 
-    let fast = multiexp((g, 0), FullDensity, v, &mut None).unwrap();
+    let worker = Worker::new();
+    let fast = multiexp(&worker, (g, 0), FullDensity, v, &mut None).unwrap();
 
     println!("Fast: {}", now.elapsed().as_millis());
 
@@ -416,6 +417,8 @@ pub fn gpu_multiexp_consistency() {
         .map(|_| <Bls12 as crate::bls::Engine>::G1::random(rng).into_affine())
         .collect::<Vec<_>>();
 
+    let worker = Worker::new();
+
     for log_d in START_LOG_D..=MAX_LOG_D {
         let g = Arc::new(bases.clone());
 
@@ -429,12 +432,12 @@ pub fn gpu_multiexp_consistency() {
         );
 
         let mut now = Instant::now();
-        let gpu = multiexp((g.clone(), 0), FullDensity, v.clone(), &mut kern).unwrap();
+        let gpu = multiexp(&worker, (g.clone(), 0), FullDensity, v.clone(), &mut kern).unwrap();
         let gpu_dur = now.elapsed().as_secs() * 1000 as u64 + now.elapsed().subsec_millis() as u64;
         println!("GPU took {}ms.", gpu_dur);
 
         now = Instant::now();
-        let cpu = multiexp((g.clone(), 0), FullDensity, v.clone(), &mut None).unwrap();
+        let cpu = multiexp(&worker, (g.clone(), 0), FullDensity, v.clone(), &mut None).unwrap();
         let cpu_dur = now.elapsed().as_secs() * 1000 as u64 + now.elapsed().subsec_millis() as u64;
         println!("CPU took {}ms.", cpu_dur);
 
