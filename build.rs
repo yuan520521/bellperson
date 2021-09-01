@@ -64,7 +64,10 @@ fn main() {
             .expect("Cannot run nvcc.");
 
         if !status.success() {
-            panic!("nvcc failed.");
+            panic!(
+                "nvcc failed. See the kernel source at {}",
+                source_path.to_str().unwrap()
+            );
         }
     }
 
