@@ -11,7 +11,7 @@ parameters:
 executors:
   default:
     machine:
-      image: ubuntu-1604-cuda-10.1:201909-23
+      image: ubuntu-1604-cuda-10.2:202012-01
     working_directory: ~/gpuci
     resource_class: gpu.nvidia.medium
 
