@@ -57,6 +57,7 @@ impl Worker {
         let (sender, receiver) = bounded(1);
         THREAD_POOL.scoped(|s| {
             let res = f(s);
+            s.join();
             sender.send(res).unwrap();
         });
 
