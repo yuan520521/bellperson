@@ -40,8 +40,8 @@ commands:
       - run:
           name: Install libraries for GPU tests
           command: |
-            sudo apt update -y
-            sudo apt-get update -y
+            sudo apt update || true
+            sudo apt-get update -y || true
             sudo apt install -y ocl-icd-opencl-dev
 
   test_target_pairing:
