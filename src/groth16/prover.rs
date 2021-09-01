@@ -366,7 +366,7 @@ where
     let mut fft_kern = Some(LockedFFTKernel::<E>::new(log_d, priority));
 
     info!("a_s");
-    let provers_len = provers.len();
+    let _provers_len = provers.len();
     let provers_ref = &mut provers;
     let params = &params;
     let worker = &worker;
