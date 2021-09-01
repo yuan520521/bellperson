@@ -433,12 +433,12 @@ pub fn gpu_multiexp_consistency() {
 
         let mut now = Instant::now();
         let gpu = multiexp(&worker, (g.clone(), 0), FullDensity, v.clone(), &mut kern).unwrap();
-        let gpu_dur = now.elapsed().as_secs() * 1000 as u64 + now.elapsed().subsec_millis() as u64;
+        let gpu_dur = now.elapsed().as_secs() * 1000_u64 + now.elapsed().subsec_millis() as u64;
         println!("GPU took {}ms.", gpu_dur);
 
         now = Instant::now();
         let cpu = multiexp(&worker, (g.clone(), 0), FullDensity, v.clone(), &mut None).unwrap();
-        let cpu_dur = now.elapsed().as_secs() * 1000 as u64 + now.elapsed().subsec_millis() as u64;
+        let cpu_dur = now.elapsed().as_secs() * 1000_u64 + now.elapsed().subsec_millis() as u64;
         println!("CPU took {}ms.", cpu_dur);
 
         println!("Speedup: x{}", cpu_dur as f32 / gpu_dur as f32);
