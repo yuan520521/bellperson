@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::bls::Engine;
+use blstrs::ScalarEngine;
 use ff::{Field, PrimeField};
 use groupy::{CurveAffine, CurveProjective};
 use rand_core::RngCore;
@@ -10,7 +11,7 @@ use rayon::prelude::*;
 use super::{ParameterSource, Proof};
 use crate::domain::{EvaluationDomain, Scalar};
 use crate::gpu::{LockedFFTKernel, LockedMultiexpKernel};
-use crate::multicore::{Worker, RAYON_THREAD_POOL};
+use crate::multicore::{Worker, RAYON_THREAD_POOL, THREAD_POOL};
 use crate::multiexp::{multiexp, DensityTracker, FullDensity};
 use crate::{
     Circuit, ConstraintSystem, Index, LinearCombination, SynthesisError, Variable, BELLMAN_VERSION,
@@ -290,6 +291,8 @@ where
     let a_aux_density_total = provers[0].a_aux_density.get_total_density();
     let b_input_density_total = provers[0].b_input_density.get_total_density();
     let b_aux_density_total = provers[0].b_aux_density.get_total_density();
+    let aux_assignment_len = provers[0].aux_assignment.len();
+    let num_circuits = provers.len();
 
     // Make sure all circuits have the same input len.
     for prover in &provers {
@@ -328,87 +331,91 @@ where
         None
     };
 
-    let mut fft_kern = Some(LockedFFTKernel::<E>::new(log_d, priority));
+    let mut a_s = Vec::with_capacity(num_circuits);
+    let mut params_h = None;
+    let worker = &worker;
+    let provers_ref = &mut provers;
+    let params = &params;
 
-    let a_s = provers
-        .iter_mut()
-        .map(|prover| {
-            let mut a =
-                EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.a, Vec::new()))?;
-            let mut b =
-                EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.b, Vec::new()))?;
-            let mut c =
-                EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.c, Vec::new()))?;
+    THREAD_POOL.scoped(|s| {
+        let a_s = &mut a_s;
+        s.execute(move || {
+            let mut fft_kern = Some(LockedFFTKernel::<E>::new(log_d, priority));
 
-            a.ifft(&worker, &mut fft_kern)?;
-            a.coset_fft(&worker, &mut fft_kern)?;
-            b.ifft(&worker, &mut fft_kern)?;
-            b.coset_fft(&worker, &mut fft_kern)?;
-            c.ifft(&worker, &mut fft_kern)?;
-            c.coset_fft(&worker, &mut fft_kern)?;
+            for prover in provers_ref {
+                a_s.push(execute_fft(worker, prover, &mut fft_kern));
+            }
+        });
 
-            a.mul_assign(&worker, &b);
-            drop(b);
-            a.sub_assign(&worker, &c);
-            drop(c);
-            a.divide_by_z_on_coset(&worker);
-            a.icoset_fft(&worker, &mut fft_kern)?;
-            let mut a = a.into_coeffs();
-            let a_len = a.len() - 1;
-            a.truncate(a_len);
+        debug!("get h");
+        params_h = Some(params.get_h(n));
+    });
 
-            Ok(Arc::new(
-                a.into_iter().map(|s| s.0.into_repr()).collect::<Vec<_>>(),
-            ))
-        })
+    let a_s = a_s
+        .into_iter()
         .collect::<Result<Vec<_>, SynthesisError>>()?;
 
-    drop(fft_kern);
     let mut multiexp_kern = Some(LockedMultiexpKernel::<E>::new(log_d, priority));
+    let params_h = params_h.unwrap()?;
 
-    debug!("get h");
-    let params_h = params.get_h(n)?;
-    debug!("multiexp h");
-    let h_s = a_s
-        .into_iter()
-        .map(|a| {
-            multiexp(
+    let mut h_s = Vec::with_capacity(num_circuits);
+    let mut params_l = None;
+    THREAD_POOL.scoped(|s| {
+        let params_l = &mut params_l;
+        s.execute(move || {
+            debug!("get l");
+            *params_l = Some(params.get_l(aux_assignment_len));
+        });
+
+        debug!("multiexp h");
+        for a in a_s.into_iter() {
+            h_s.push(multiexp(
                 &worker,
                 params_h.clone(),
                 FullDensity,
                 a,
                 &mut multiexp_kern,
-            )
-        })
-        .collect::<Vec<_>>();
-    drop(params_h);
-    debug!("get l");
-    let params_l = params.get_l(provers[0].aux_assignment.len())?;
-    debug!("multiexp l");
-    let l_s = aux_assignments
-        .iter()
-        .map(|aux_assignment| {
-            multiexp(
-                &worker,
-                params_l.clone(),
-                FullDensity,
-                aux_assignment.clone(),
-                &mut multiexp_kern,
-            )
-        })
-        .collect::<Vec<_>>();
-    drop(params_l);
+            ));
+        }
+    });
 
-    debug!("get_a b_g1 b_g2");
+    let params_l = params_l.unwrap()?;
+
+    let mut l_s = Vec::with_capacity(num_circuits);
+    let mut params_a = None;
+    let mut params_b_g1 = None;
+    let mut params_b_g2 = None;
     let a_aux_density_total = provers[0].a_aux_density.get_total_density();
     let b_input_density_total = provers[0].b_input_density.get_total_density();
     let b_aux_density_total = provers[0].b_aux_density.get_total_density();
 
-    let (a_inputs_source, a_aux_source) = params.get_a(input_len, a_aux_density_total)?;
-    let (b_g1_inputs_source, b_g1_aux_source) =
-        params.get_b_g1(b_input_density_total, b_aux_density_total)?;
-    let (b_g2_inputs_source, b_g2_aux_source) =
-        params.get_b_g2(b_input_density_total, b_aux_density_total)?;
+    THREAD_POOL.scoped(|s| {
+        let params_a = &mut params_a;
+        let params_b_g1 = &mut params_b_g1;
+        let params_b_g2 = &mut params_b_g2;
+        s.execute(move || {
+            debug!("get_a b_g1 b_g2");
+            *params_a = Some(params.get_a(input_len, a_aux_density_total));
+            *params_b_g1 = Some(params.get_b_g1(b_input_density_total, b_aux_density_total));
+            *params_b_g2 = Some(params.get_b_g2(b_input_density_total, b_aux_density_total));
+        });
+
+        debug!("multiexp l");
+        for aux in aux_assignments.iter() {
+            l_s.push(multiexp(
+                &worker,
+                params_l.clone(),
+                FullDensity,
+                aux.clone(),
+                &mut multiexp_kern,
+            ));
+        }
+    });
+
+    debug!("get_a b_g1 b_g2");
+    let (a_inputs_source, a_aux_source) = params_a.unwrap()?;
+    let (b_g1_inputs_source, b_g1_aux_source) = params_b_g1.unwrap()?;
+    let (b_g2_inputs_source, b_g2_aux_source) = params_b_g2.unwrap()?;
 
     debug!("multiexp a b_g1 b_g2");
     let inputs = provers
@@ -551,6 +558,44 @@ where
     info!("prover time: {:?}", proof_time);
 
     Ok(proofs)
+}
+
+fn execute_fft<E>(
+    worker: &Worker,
+    prover: &mut ProvingAssignment<E>,
+    fft_kern: &mut Option<LockedFFTKernel<E>>,
+) -> Result<Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>, SynthesisError>
+where
+    E: Engine,
+{
+    let mut a = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.a, Vec::new()))?;
+    a.ifft(&worker, fft_kern)?;
+    a.coset_fft(&worker, fft_kern)?;
+
+    let mut b = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.b, Vec::new()))?;
+
+    b.ifft(&worker, fft_kern)?;
+    b.coset_fft(&worker, fft_kern)?;
+
+    a.mul_assign(&worker, &b);
+    drop(b);
+
+    let mut c = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.c, Vec::new()))?;
+
+    c.ifft(&worker, fft_kern)?;
+    c.coset_fft(&worker, fft_kern)?;
+    a.sub_assign(&worker, &c);
+    drop(c);
+
+    a.divide_by_z_on_coset(&worker);
+    a.icoset_fft(&worker, fft_kern)?;
+    let mut a = a.into_coeffs();
+    let a_len = a.len() - 1;
+    a.truncate(a_len);
+
+    Ok(Arc::new(
+        a.into_iter().map(|s| s.0.into_repr()).collect::<Vec<_>>(),
+    ))
 }
 
 #[allow(clippy::type_complexity)]
