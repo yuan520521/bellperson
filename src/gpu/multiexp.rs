@@ -8,7 +8,7 @@ use crate::multiexp::{multiexp as cpu_multiexp, FullDensity};
 
 use ff::{PrimeField, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
-use log::{error, info};
+use log::{debug, error, info};
 use rust_gpu_tools::*;
 use std::any::TypeId;
 use std::sync::{
@@ -302,6 +302,7 @@ where
 
         let cpu_acc = pool.scoped(|s| {
             if n > 0 {
+                debug!("gpu multiexp with {} elemnts, in {} chunks", n, num_devices);
                 results = (0..self.kernels.len())
                     .map(|_| Ok(G::Projective::zero()))
                     .collect::<Vec<_>>();

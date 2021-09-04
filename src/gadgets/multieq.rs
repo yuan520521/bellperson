@@ -94,9 +94,9 @@ impl<E: ScalarEngine, CS: ConstraintSystem<E>> ConstraintSystem<E> for MultiEq<E
     where
         A: FnOnce() -> AR,
         AR: Into<String>,
-        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
+        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
     {
         self.cs.enforce(annotation, a, b, c)
     }

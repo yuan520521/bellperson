@@ -421,14 +421,14 @@ impl Boolean {
         match *self {
             Boolean::Constant(c) => {
                 if c {
-                    LinearCombination::<E>::zero() + (coeff, one)
+                    LinearCombination::<E>::from_coeff(one, coeff)
                 } else {
                     LinearCombination::<E>::zero()
                 }
             }
-            Boolean::Is(ref v) => LinearCombination::<E>::zero() + (coeff, v.get_variable()),
+            Boolean::Is(ref v) => LinearCombination::<E>::from_coeff(v.get_variable(), coeff),
             Boolean::Not(ref v) => {
-                LinearCombination::<E>::zero() + (coeff, one) - (coeff, v.get_variable())
+                LinearCombination::<E>::from_coeff(one, coeff) - (coeff, v.get_variable())
             }
         }
     }

@@ -259,9 +259,9 @@ pub trait ConstraintSystem<E: ScalarEngine>: Sized + Send {
     where
         A: FnOnce() -> AR,
         AR: Into<String>,
-        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E>;
+        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send;
 
     /// Create a new (sub)namespace and enter into it. Not intended
     /// for downstream use; use `namespace` instead.
@@ -353,9 +353,9 @@ impl<'cs, E: ScalarEngine, CS: ConstraintSystem<E>> ConstraintSystem<E> for Name
     where
         A: FnOnce() -> AR,
         AR: Into<String>,
-        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
+        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
     {
         self.0.enforce(annotation, a, b, c)
     }
@@ -418,9 +418,9 @@ impl<'cs, E: ScalarEngine, CS: ConstraintSystem<E>> ConstraintSystem<E> for &'cs
     where
         A: FnOnce() -> AR,
         AR: Into<String>,
-        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
-        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E>,
+        LA: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LB: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
+        LC: FnOnce(LinearCombination<E>) -> LinearCombination<E> + Sync + Send,
     {
         (**self).enforce(annotation, a, b, c)
     }
