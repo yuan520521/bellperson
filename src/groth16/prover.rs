@@ -548,14 +548,15 @@ where
     debug!("icoset fft a");
     a.icoset_fft(&worker, fft_kern)?;
     debug!("finalize");
-    
-    let mut a = a.into_coeffs();
-    let a_len = a.len() - 1;
-    a.truncate(a_len);
 
-    Ok(Arc::new(
-        a.into_iter().map(|s| s.0.into_repr()).collect::<Vec<_>>(),
-    ))
+    let a = a.into_coeffs();
+    let a_len = a.len() - 1;
+    let a = a
+        .into_par_iter()
+        .take(a_len)
+        .map(|s| s.0.into_repr())
+        .collect::<Vec<_>>();
+    Ok(Arc::new(a))
 }
 
 #[allow(clippy::type_complexity)]
