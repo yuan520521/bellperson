@@ -2,7 +2,7 @@ use std::io;
 use std::iter;
 use std::sync::Arc;
 
-use bit_vec::{self, BitVec};
+use bitvec::prelude::*;
 use ff::{Field, PrimeField, PrimeFieldRepr, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
 use log::{info, warn};
@@ -84,12 +84,19 @@ impl<G: CurveAffine> Source<G> for (Arc<Vec<G>>, usize) {
     }
 }
 
-pub trait QueryDensity {
+pub trait QueryDensity: Sized {
     /// Returns whether the base exists.
     type Iter: Iterator<Item = bool>;
 
     fn iter(self) -> Self::Iter;
     fn get_query_size(self) -> Option<usize>;
+    fn generate_exps<E: ScalarEngine>(
+        self,
+        exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+    ) -> (
+        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+        usize,
+    );
 }
 
 #[derive(Clone)]
@@ -111,6 +118,16 @@ impl<'a> QueryDensity for &'a FullDensity {
     fn get_query_size(self) -> Option<usize> {
         None
     }
+
+    fn generate_exps<E: ScalarEngine>(
+        self,
+        exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+    ) -> (
+        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+        usize,
+    ) {
+        (exponents.clone(), exponents.len())
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -120,14 +137,37 @@ pub struct DensityTracker {
 }
 
 impl<'a> QueryDensity for &'a DensityTracker {
-    type Iter = bit_vec::Iter<'a>;
+    type Iter = bitvec::slice::BitValIter<'a, Lsb0, usize>;
 
     fn iter(self) -> Self::Iter {
-        self.bv.iter()
+        self.bv.iter().by_val()
     }
 
     fn get_query_size(self) -> Option<usize> {
         Some(self.bv.len())
+    }
+
+    fn generate_exps<E: ScalarEngine>(
+        self,
+        exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+    ) -> (
+        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
+        usize,
+    ) {
+        let first = exponents[0];
+        let needed_len = exponents.len();
+        let n = self.get_total_density();
+
+        let exps: Vec<_> = exponents
+            .iter()
+            .zip(self.bv.iter())
+            .filter_map(|(&e, d)| if *d { Some(e) } else { None })
+            .chain(std::iter::repeat(first).take(needed_len - n))
+            .collect();
+
+        debug_assert_eq!(exps.len(), exponents.len());
+
+        (Arc::new(exps), n)
     }
 }
 
@@ -302,17 +342,11 @@ where
 {
     if let Some(ref mut kern) = kern {
         if let Ok(p) = kern.with(|k: &mut gpu::MultiexpKernel<G::Engine>| {
-            let mut exps = vec![exponents[0]; exponents.len()];
-            let mut n = 0;
-            for (&e, d) in exponents.iter().zip(density_map.as_ref().iter()) {
-                if d {
-                    exps[n] = e;
-                    n += 1;
-                }
-            }
-
+            let (exps, n) = density_map
+                .as_ref()
+                .generate_exps::<G::Engine>(exponents.clone());
             let (bss, skip) = bases.clone().get();
-            k.multiexp(pool, bss, Arc::new(exps), skip, n)
+            k.multiexp(pool, bss, exps, skip, n)
         }) {
             return Waiter::done(Ok(p));
         }
