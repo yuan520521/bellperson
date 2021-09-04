@@ -93,10 +93,7 @@ pub trait QueryDensity: Sized {
     fn generate_exps<E: ScalarEngine>(
         self,
         exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-    ) -> (
-        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-        usize,
-    );
+    ) -> Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>;
 }
 
 #[derive(Clone)]
@@ -122,11 +119,8 @@ impl<'a> QueryDensity for &'a FullDensity {
     fn generate_exps<E: ScalarEngine>(
         self,
         exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-    ) -> (
-        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-        usize,
-    ) {
-        (exponents.clone(), exponents.len())
+    ) -> Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>> {
+        exponents.clone()
     }
 }
 
@@ -150,24 +144,14 @@ impl<'a> QueryDensity for &'a DensityTracker {
     fn generate_exps<E: ScalarEngine>(
         self,
         exponents: Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-    ) -> (
-        Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>>,
-        usize,
-    ) {
-        let first = exponents[0];
-        let needed_len = exponents.len();
-        let n = self.get_total_density();
-
+    ) -> Arc<Vec<<<E as ScalarEngine>::Fr as PrimeField>::Repr>> {
         let exps: Vec<_> = exponents
             .iter()
             .zip(self.bv.iter())
             .filter_map(|(&e, d)| if *d { Some(e) } else { None })
-            .chain(std::iter::repeat(first).take(needed_len - n))
             .collect();
 
-        debug_assert_eq!(exps.len(), exponents.len());
-
-        (Arc::new(exps), n)
+        Arc::new(exps)
     }
 }
 
@@ -342,10 +326,11 @@ where
 {
     if let Some(ref mut kern) = kern {
         if let Ok(p) = kern.with(|k: &mut gpu::MultiexpKernel<G::Engine>| {
-            let (exps, n) = density_map
+            let exps = density_map
                 .as_ref()
                 .generate_exps::<G::Engine>(exponents.clone());
             let (bss, skip) = bases.clone().get();
+            let n = exps.len();
             k.multiexp(pool, bss, exps, skip, n)
         }) {
             return Waiter::done(Ok(p));

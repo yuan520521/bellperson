@@ -347,8 +347,8 @@ where
             debug!("params_a done");
         });
 
-        debug!("multiexp h");
-        for a in a_s.into_iter() {
+        for (i, a) in a_s.into_iter().enumerate() {
+            debug!("multiexp h: {}", i);
             h_s.push(multiexp(
                 &worker,
                 params_h.clone(),
@@ -381,8 +381,8 @@ where
             debug!("params_b_g2 done")
         });
 
-        debug!("multiexp l");
-        for (_, _, aux) in provers.iter() {
+        for (i, (_, _, aux)) in provers.iter().enumerate() {
+            debug!("multiexp l {}", i);
             l_s.push(multiexp(
                 &worker,
                 params_l.clone(),
@@ -598,6 +598,7 @@ where
                     .map(|s| s.into_repr())
                     .collect::<Vec<_>>(),
             );
+            debug!("done input {} {}", i, input.len());
             let aux_assignment = std::mem::replace(&mut prover.aux_assignment, Vec::new());
             let aux = Arc::new(
                 aux_assignment
@@ -605,6 +606,7 @@ where
                     .map(|s| s.into_repr())
                     .collect::<Vec<_>>(),
             );
+            debug!("done aux {} {}", i, aux.len());
 
             Ok((prover, input, aux))
         })
