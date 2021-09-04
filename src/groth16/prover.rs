@@ -531,28 +531,23 @@ where
 {
     let mut a = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.a, Vec::new()))?;
     let mut b = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.b, Vec::new()))?;
+    let mut c = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.c, Vec::new()))?;
 
-    debug!("ifft a-b");
-    EvaluationDomain::ifft_dual(&mut a, &mut b, &worker, fft_kern)?;
-    debug!("coset fft a-b");
-    EvaluationDomain::coset_fft_dual(&mut a, &mut b, &worker, fft_kern)?;
+    debug!("ifft a-b-c");
+    EvaluationDomain::ifft3(&mut a, &mut b, &mut c, &worker, fft_kern)?;
+    debug!("coset fft a-b-c");
+    EvaluationDomain::coset_fft3(&mut a, &mut b, &mut c, &worker, fft_kern)?;
 
     a.mul_assign(&worker, &b);
     drop(b);
-
-    let mut c = EvaluationDomain::from_coeffs(std::mem::replace(&mut prover.c, Vec::new()))?;
-
-    debug!("ifft c");
-    c.ifft(&worker, fft_kern)?;
-    debug!("coset fft c");
-    c.coset_fft(&worker, fft_kern)?;
-
     a.sub_assign(&worker, &c);
     drop(c);
 
+    debug!("divide by z on coset");
     a.divide_by_z_on_coset(&worker);
     debug!("icoset fft a");
     a.icoset_fft(&worker, fft_kern)?;
+    debug!("finalize");
     
     let mut a = a.into_coeffs();
     let a_len = a.len() - 1;

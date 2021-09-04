@@ -93,19 +93,21 @@ impl<E: Engine, G: Group<E>> EvaluationDomain<E, G> {
         Ok(())
     }
 
-    pub fn fft_dual(
+    pub fn fft3(
         a0: &mut Self,
         a1: &mut Self,
+        a2: &mut Self,
         worker: &Worker,
         kern: &mut Option<gpu::LockedFFTKernel<E>>,
     ) -> gpu::GPUResult<()> {
-        best_fft_dual(
+        best_fft3(
             worker,
             kern,
             &mut a0.coeffs,
             &mut a1.coeffs,
-            &[a0.omega, a1.omega],
-            &[a0.exp, a1.exp],
+            &mut a2.coeffs,
+            &[a0.omega, a1.omega, a2.omega],
+            &[a0.exp, a1.exp, a2.exp],
         );
 
         Ok(())
@@ -137,24 +139,27 @@ impl<E: Engine, G: Group<E>> EvaluationDomain<E, G> {
         });
     }
 
-    /// Executes two iffts at once.
-    pub fn ifft_dual(
+    /// Executes 3 iffts at once.
+    pub fn ifft3(
         a0: &mut Self,
         a1: &mut Self,
+        a2: &mut Self,
         worker: &Worker,
         kern: &mut Option<gpu::LockedFFTKernel<E>>,
     ) -> gpu::GPUResult<()> {
-        best_fft_dual(
+        best_fft3(
             worker,
             kern,
             &mut a0.coeffs,
             &mut a1.coeffs,
-            &[a0.omegainv, a1.omegainv],
-            &[a0.exp, a1.exp],
+            &mut a2.coeffs,
+            &[a0.omegainv, a1.omegainv, a2.omegainv],
+            &[a0.exp, a1.exp, a2.exp],
         );
 
         a0.inner_ifft(worker);
         a1.inner_ifft(worker);
+        a2.inner_ifft(worker);
 
         Ok(())
     }
@@ -183,16 +188,18 @@ impl<E: Engine, G: Group<E>> EvaluationDomain<E, G> {
         Ok(())
     }
 
-    pub fn coset_fft_dual(
+    pub fn coset_fft3(
         a0: &mut Self,
         a1: &mut Self,
+        a2: &mut Self,
         worker: &Worker,
         kern: &mut Option<gpu::LockedFFTKernel<E>>,
     ) -> gpu::GPUResult<()> {
         a0.distribute_powers(worker, E::Fr::multiplicative_generator());
         a1.distribute_powers(worker, E::Fr::multiplicative_generator());
+        a2.distribute_powers(worker, E::Fr::multiplicative_generator());
 
-        Self::fft_dual(a0, a1, worker, kern)?;
+        Self::fft3(a0, a1, a2, worker, kern)?;
 
         Ok(())
     }
@@ -490,20 +497,25 @@ fn parallel_fft<E: ScalarEngine, T: Group<E>>(
     });
 }
 
-fn best_fft_dual<E: Engine, T: Group<E>>(
+fn best_fft3<E: Engine, T: Group<E>>(
     worker: &Worker,
     kern: &mut Option<gpu::LockedFFTKernel<E>>,
     a0: &mut [T],
     a1: &mut [T],
-    omegas: &[E::Fr; 2],
-    log_ns: &[u32],
+    a2: &mut [T],
+    omegas: &[E::Fr; 3],
+    log_ns: &[u32; 3],
 ) {
     if let Some(ref mut kern) = kern {
         if kern
             .with(|k: &mut gpu::FFTKernel<E>| {
-                let mut coeffs = [unsafe { &mut *(a0 as *mut [T] as *mut [E::Fr]) }, unsafe {
-                    &mut *(a1 as *mut [T] as *mut [E::Fr])
-                }];
+                let mut coeffs = unsafe {
+                    [
+                        &mut *(a0 as *mut [T] as *mut [E::Fr]),
+                        &mut *(a1 as *mut [T] as *mut [E::Fr]),
+                        &mut *(a2 as *mut [T] as *mut [E::Fr]),
+                    ]
+                };
                 k.radix_fft_many(&mut coeffs[..], omegas, log_ns)
             })
             .is_ok()
@@ -512,7 +524,11 @@ fn best_fft_dual<E: Engine, T: Group<E>>(
         }
     }
     let log_cpus = worker.log_num_cpus();
-    for ((a, omega), log_n) in [a0, a1].iter_mut().zip(omegas.iter()).zip(log_ns.iter()) {
+    for ((a, omega), log_n) in [a0, a1, a2]
+        .iter_mut()
+        .zip(omegas.iter())
+        .zip(log_ns.iter())
+    {
         if *log_n <= log_cpus {
             serial_fft(*a, omega, *log_n);
         } else {
