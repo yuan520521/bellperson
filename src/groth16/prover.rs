@@ -1,14 +1,13 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::bls::Engine;
-use blstrs::ScalarEngine;
-use ff::{Field, PrimeField};
+use ff::{Field, PrimeField, ScalarEngine};
 use groupy::{CurveAffine, CurveProjective};
 use rand_core::RngCore;
 use rayon::prelude::*;
 
 use super::{ParameterSource, Proof};
+use crate::bls::Engine;
 use crate::domain::{EvaluationDomain, Scalar};
 use crate::gpu::{LockedFFTKernel, LockedMultiexpKernel};
 use crate::multicore::{Worker, RAYON_THREAD_POOL, THREAD_POOL};
@@ -263,6 +262,7 @@ where
     create_proof_batch_priority::<E, C, P>(circuits, params, r_s, s_s, priority)
 }
 
+#[allow(clippy::clippy::needless_collect)]
 pub fn create_proof_batch_priority<E, C, P: ParameterSource<E>>(
     circuits: Vec<C>,
     params: P,
